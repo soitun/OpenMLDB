@@ -45,10 +45,10 @@ class LlvmUdfGenBase;
 namespace hybridse {
 namespace node {
 
-class ConstNode;
+class ExprNode;
 class WithClauseEntry;
 
-typedef std::unordered_map<std::string, const ConstNode*> OptionsMap;
+typedef std::unordered_map<std::string, const ExprNode*> OptionsMap;
 
 // Global methods
 std::string NameOfSqlNodeType(const SqlNodeType &type);
@@ -358,6 +358,22 @@ class SqlNode : public NodeBase<SqlNode> {
 
     bool Equals(const SqlNode *node) const override;
 
+    // Return this node cast as a NodeType.
+    // Use only when this node is known to be that type, otherwise, behavior is undefined.
+    template <typename NodeType>
+    const NodeType *GetAsOrNull() const {
+        static_assert(std::is_base_of<SqlNode, NodeType>::value,
+                      "NodeType must be a member of the SqlNode class hierarchy");
+        return dynamic_cast<const NodeType *>(this);
+    }
+
+    template <typename NodeType>
+    NodeType *GetAsOrNull() {
+        static_assert(std::is_base_of<SqlNode, NodeType>::value,
+                      "NodeType must be a member of the SqlNode class hierarchy");
+        return dynamic_cast<NodeType *>(this);
+    }
+
     SqlNodeType type_;
 
  private:
@@ -371,12 +387,14 @@ typedef std::vector<SqlNode *> NodePointVector;
 // supported as:
 // - ADD PATH
 // - DROP PATH
+// - SET OPTIONS
 // all else is unsupported
 class AlterActionBase : public base::FeBaseObject {
  public:
     enum class ActionKind {
         ADD_PATH = 0,
-        DROP_PATH
+        DROP_PATH,
+        SET_OPTIONS
     };
 
     explicit AlterActionBase(ActionKind k) : kind_(k) {}
@@ -406,6 +424,16 @@ class DropPathAction : public AlterActionBase {
     std::string target_;
 };
 
+class SetOptionsAction : public AlterActionBase {
+ public:
+    explicit SetOptionsAction(std::shared_ptr<OptionsMap> options)
+        : AlterActionBase(ActionKind::SET_OPTIONS), options_(options) {}
+    std::string DebugString() const override;
+    const std::shared_ptr<OptionsMap> Options() const { return options_; }
+
+ private:
+    const std::shared_ptr<OptionsMap> options_;
+};
 
 class AlterTableStmt: public SqlNode {
  public:
@@ -1492,22 +1520,28 @@ class FnDefNode : public SqlNode {
 
 class CastExprNode : public ExprNode {
  public:
-    explicit CastExprNode(const node::DataType cast_type, node::ExprNode *expr)
+    explicit CastExprNode(const node::TypeNode *cast_type, node::ExprNode *expr)
         : ExprNode(kExprCast), cast_type_(cast_type) {
         this->AddChild(expr);
     }
-
     ~CastExprNode() {}
-    void Print(std::ostream &output, const std::string &org_tab) const;
-    const std::string GetExprString() const;
-    virtual bool Equals(const ExprNode *that) const;
+    void Print(std::ostream &output, const std::string &org_tab) const override;
+    const std::string GetExprString() const override;
+    bool Equals(const ExprNode *that) const override;
     CastExprNode *ShadowCopy(NodeManager *) const override;
     static CastExprNode *CastFrom(ExprNode *node);
 
     ExprNode *expr() const { return GetChild(0); }
-    const DataType cast_type_;
+    const TypeNode *cast_type() const { return cast_type_; }
+
+    // legacy interface, required by offline batch
+    // pls use cast_type() as much as possible
+    node::DataType base_cast_type() const;
 
     Status InferAttr(ExprAnalysisContext *ctx) override;
+
+ private:
+    const TypeNode *cast_type_;
 };
 
 class WhenExprNode : public ExprNode {
@@ -1595,6 +1629,10 @@ class BinaryExpr : public ExprNode {
  public:
     BinaryExpr() : ExprNode(kExprBinary) {}
     explicit BinaryExpr(FnOperator op) : ExprNode(kExprBinary), op_(op) {}
+    BinaryExpr(FnOperator op, ExprNode *lhs, ExprNode *rhs) : ExprNode(kExprBinary), op_(op) {
+        AddChild(lhs);
+        AddChild(rhs);
+    }
     FnOperator GetOp() const { return op_; }
 
     void Print(std::ostream &output, const std::string &org_tab) const;
@@ -1871,6 +1909,8 @@ class ColumnSchemaNode : public SqlNode {
     bool not_null() const { return not_null_; }
     const ExprNode *default_value() const { return default_value_; }
 
+    absl::Status GetProtoColumnSchema(type::ColumnSchema *) const;
+
     std::string DebugString() const;
 
  private:
@@ -1888,6 +1928,11 @@ class ColumnDefNode : public SqlNode {
 
     std::string GetColumnName() const { return column_name_; }
 
+    const ColumnSchemaNode *schema() const { return schema_; }
+
+    absl::Status GetProtoColumnDef(type::ColumnDef *) const;
+
+    // deprecated, use ColumnDefNode::schema instead
     DataType GetColumnType() const { return schema_->type(); }
 
     const ExprNode* GetDefaultValue() const { return schema_->default_value(); }
@@ -2010,8 +2055,11 @@ class CreateStmt : public SqlNode {
 
     ~CreateStmt() {}
 
-    NodePointVector* MutableColumnDefList() { return &column_desc_list_; }
-    const NodePointVector &GetColumnDefList() const { return column_desc_list_; }
+    NodePointVector* MutableTableElementList() { return &column_desc_list_; }
+    const NodePointVector &GetTableElementList() const { return column_desc_list_; }
+
+    // collect the column definitions in column_desc_list_, and convert to the proto representation type::ColumnDef
+    absl::StatusOr<codec::Schema> GetColumnDefListAsSchema() const;
 
     std::string GetTableName() const { return table_name_; }
     std::string GetDbName() const { return db_name_; }
@@ -2036,14 +2084,19 @@ class CreateStmt : public SqlNode {
 class IndexKeyNode : public SqlNode {
  public:
     IndexKeyNode() : SqlNode(kIndexKey, 0, 0) {}
-    explicit IndexKeyNode(const std::string &key) : SqlNode(kIndexKey, 0, 0), key_({key}) {}
-    explicit IndexKeyNode(const std::vector<std::string> &keys) : SqlNode(kIndexKey, 0, 0), key_(keys) {}
+    explicit IndexKeyNode(const std::string &key, const std::string &type)
+        : SqlNode(kIndexKey, 0, 0), key_({key}), index_type_(type) {}
+    explicit IndexKeyNode(const std::vector<std::string> &keys, const std::string &type)
+        : SqlNode(kIndexKey, 0, 0), key_(keys), index_type_(type) {}
     ~IndexKeyNode() {}
     void AddKey(const std::string &key) { key_.push_back(key); }
+    void SetIndexType(const std::string &type) { index_type_ = type; }
     std::vector<std::string> &GetKey() { return key_; }
+    std::string &GetIndexType() { return index_type_; }
 
  private:
     std::vector<std::string> key_;
+    std::string index_type_ = "key";
 };
 class IndexVersionNode : public SqlNode {
  public:
@@ -2097,6 +2150,7 @@ class ColumnIndexNode : public SqlNode {
  public:
     ColumnIndexNode()
         : SqlNode(kColumnIndex, 0, 0),
+          index_type_("key"),
           ts_(""),
           version_(""),
           version_count_(0),
@@ -2107,6 +2161,8 @@ class ColumnIndexNode : public SqlNode {
 
     std::vector<std::string> &GetKey() { return key_; }
     void SetKey(const std::vector<std::string> &key) { key_ = key; }
+    void SetIndexType(const std::string &type) { index_type_ = type; }
+    std::string &GetIndexType() { return index_type_; }
 
     std::string GetTs() const { return ts_; }
 
@@ -2135,6 +2191,7 @@ class ColumnIndexNode : public SqlNode {
 
  private:
     std::vector<std::string> key_;
+    std::string index_type_;
     std::string ts_;
     std::string version_;
     int version_count_;
@@ -2341,6 +2398,96 @@ class CreateIndexNode : public SqlNode {
     node::ColumnIndexNode *index_;
 };
 
+class CreateUserNode : public SqlNode {
+ public:
+    explicit CreateUserNode(const std::string &name,
+            bool if_not_exists, const std::shared_ptr<OptionsMap>& options)
+        : SqlNode(kCreateUserStmt, 0, 0),
+        name_(name), if_not_exists_(if_not_exists), options_(options) {}
+    void Print(std::ostream &output, const std::string &org_tab) const;
+    const std::string& Name() const { return name_; }
+    bool IfNotExists() const { return if_not_exists_; }
+    const std::shared_ptr<OptionsMap> Options() const { return options_; }
+
+ private:
+    const std::string name_;
+    bool if_not_exists_;
+    const std::shared_ptr<OptionsMap> options_;
+};
+
+class AlterUserNode : public SqlNode {
+ public:
+    explicit AlterUserNode(const std::string &name, bool if_exists, const std::shared_ptr<OptionsMap>& options)
+        : SqlNode(kAlterUserStmt, 0, 0), name_(name), if_exists_(if_exists), options_(options) {}
+    void Print(std::ostream &output, const std::string &org_tab) const;
+    const std::string& Name() const { return name_; }
+    bool IfExists() const { return if_exists_; }
+    const std::shared_ptr<OptionsMap> Options() const { return options_; }
+
+ private:
+    const std::string name_;
+    bool if_exists_ = false;
+    const std::shared_ptr<OptionsMap> options_;
+};
+
+class GrantNode : public SqlNode {
+ public:
+    explicit GrantNode(std::optional<std::string> target_type, std::string database, std::string target,
+                       std::vector<std::string> privileges, bool is_all_privileges, std::vector<std::string> grantees,
+                       bool with_grant_option)
+        : SqlNode(kGrantStmt, 0, 0),
+          target_type_(target_type),
+          database_(database),
+          target_(target),
+          privileges_(privileges),
+          is_all_privileges_(is_all_privileges),
+          grantees_(grantees),
+          with_grant_option_(with_grant_option) {}
+    const std::vector<std::string> Privileges() const { return privileges_; }
+    const std::vector<std::string> Grantees() const { return grantees_; }
+    const std::string Database() const { return database_; }
+    const std::string Target() const { return target_; }
+    const std::optional<std::string> TargetType() const { return target_type_; }
+    const bool IsAllPrivileges() const { return is_all_privileges_; }
+    const bool WithGrantOption() const { return with_grant_option_; }
+
+ private:
+    std::optional<std::string> target_type_;
+    std::string database_;
+    std::string target_;
+    std::vector<std::string> privileges_;
+    bool is_all_privileges_;
+    std::vector<std::string> grantees_;
+    bool with_grant_option_;
+};
+
+class RevokeNode : public SqlNode {
+ public:
+    explicit RevokeNode(std::optional<std::string> target_type, std::string database, std::string target,
+                        std::vector<std::string> privileges, bool is_all_privileges, std::vector<std::string> grantees)
+        : SqlNode(kRevokeStmt, 0, 0),
+          target_type_(target_type),
+          database_(database),
+          target_(target),
+          privileges_(privileges),
+          is_all_privileges_(is_all_privileges),
+          grantees_(grantees) {}
+    const std::vector<std::string> Privileges() const { return privileges_; }
+    const std::vector<std::string> Grantees() const { return grantees_; }
+    const std::string Database() const { return database_; }
+    const std::string Target() const { return target_; }
+    const std::optional<std::string> TargetType() const { return target_type_; }
+    const bool IsAllPrivileges() const { return is_all_privileges_; }
+
+ private:
+    std::optional<std::string> target_type_;
+    std::string database_;
+    std::string target_;
+    std::vector<std::string> privileges_;
+    bool is_all_privileges_;
+    std::vector<std::string> grantees_;
+};
+
 class ExplainNode : public SqlNode {
  public:
     explicit ExplainNode(const QueryNode *query, node::ExplainType explain_type)
@@ -2502,6 +2649,7 @@ class FnReturnStmt : public FnNode {
     ExprNode *return_expr_;
 };
 
+// DEPRECATED!
 class StructExpr : public ExprNode {
  public:
     explicit StructExpr(const std::string &name) : ExprNode(kExprStruct), class_name_(name) {}
@@ -2520,6 +2668,26 @@ class StructExpr : public ExprNode {
     const std::string class_name_;
     FnNodeList *fileds_;
     FnNodeList *methods_;
+};
+
+// (expr1, expr2, ...)
+class StructCtorWithParens : public ExprNode {
+ public:
+    explicit StructCtorWithParens(absl::Span<ExprNode *const> fields)
+        : ExprNode(kExprStructCtorParens) {
+        for (auto e : fields) {
+            AddChild(e);
+        }
+    }
+    ~StructCtorWithParens() override {}
+
+    absl::Span<ExprNode *const> fields() const { return children_; }
+
+    // LOW priority
+    // void Print(std::ostream &output, const std::string &org_tab) const override;
+    const std::string GetExprString() const override;
+    StructCtorWithParens *ShadowCopy(NodeManager *nm) const override;
+    Status InferAttr(ExprAnalysisContext *ctx) override;
 };
 
 class ExternalFnDefNode : public FnDefNode {
@@ -2821,6 +2989,64 @@ class UdafDefNode : public FnDefNode {
     FnDefNode *output_;
 };
 
+class VariadicUdfDefNode : public FnDefNode {
+ public:
+    VariadicUdfDefNode(const std::string &name,
+                       FnDefNode *init_func,
+                       const std::vector<FnDefNode *>& update_func,
+                       FnDefNode *output_func)
+        : FnDefNode(kVariadicUdfDef),
+          name_(name),
+          init_(init_func),
+          update_(update_func),
+          output_(output_func) {}
+
+    const std::string GetName() const override { return name_; }
+    const TypeNode *GetReturnType() const override { return output_->GetReturnType(); }
+    bool IsReturnNullable() const override { return output_->IsReturnNullable(); }
+    size_t GetArgSize() const override {
+        return init_->GetArgSize() + update_.size();
+    }
+    const TypeNode *GetArgType(size_t i) const override {
+        if (i < init_->GetArgSize()) {
+            return init_->GetArgType(i);
+        } else {
+            return update_[i - init_->GetArgSize()]->GetArgType(1);
+        }
+    }
+    bool IsArgNullable(size_t i) const override {
+        if (i < init_->GetArgSize()) {
+            return init_->IsArgNullable(i);
+        } else {
+            return update_[i - init_->GetArgSize()]->IsArgNullable(1);
+        }
+    }
+
+    base::Status Validate(const std::vector<const TypeNode *> &arg_types) const override {
+        return Status::OK();
+    }
+
+    void Print(std::ostream &output, const std::string &tab) const override;
+    bool Equals(const SqlNode *node) const override;
+
+    VariadicUdfDefNode *ShadowCopy(NodeManager *) const override;
+    VariadicUdfDefNode *DeepCopy(NodeManager *) const override;
+
+    FnDefNode *init_func() const { return init_; }
+    const std::vector<FnDefNode *> &update_func() const { return update_; }
+    FnDefNode *output_func() const { return output_; }
+
+ private:
+    std::string name_;
+    std::vector<const node::TypeNode *> arg_types_;
+    std::vector<int> arg_nullable_;
+    const node::TypeNode *ret_type_;
+    bool ret_nullable_;
+    FnDefNode *init_;
+    std::vector<FnDefNode *> update_;
+    FnDefNode *output_;
+};
+
 class PartitionMetaNode : public SqlNode {
  public:
     PartitionMetaNode() : SqlNode(kPartitionMeta, 0, 0), endpoint_(""), role_type_() {}
@@ -2927,6 +3153,20 @@ class InputParameterNode : public SqlNode {
     std::string column_name_;
     DataType column_type_;
     bool is_constant_;
+};
+
+class CallStmt : public SqlNode {
+ public:
+    CallStmt(const std::vector<std::string> names, const std::vector<ExprNode *> args)
+        : SqlNode(kCallStmt, 0, 0), procedure_name_(names), arguments_(args) {}
+    ~CallStmt() override {}
+
+    const std::vector<std::string> &procedure_name() const { return procedure_name_; }
+    const std::vector<ExprNode *> &arguments() const { return arguments_; }
+
+ private:
+    const std::vector<std::string> procedure_name_;
+    const std::vector<ExprNode*> arguments_;
 };
 
 std::string ExprString(const ExprNode *expr);

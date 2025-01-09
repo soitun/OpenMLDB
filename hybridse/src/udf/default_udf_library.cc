@@ -17,23 +17,24 @@
 #include "udf/default_udf_library.h"
 
 #include <algorithm>
+#include <functional>
 #include <limits>
+#include <queue>
 #include <string>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <queue>
-#include <functional>
 
+#include "absl/cleanup/cleanup.h"
 #include "codegen/date_ir_builder.h"
 #include "codegen/string_ir_builder.h"
 #include "codegen/timestamp_ir_builder.h"
 #include "udf/containers.h"
+#include "udf/default_defs/date_and_time_def.h"
+#include "udf/default_defs/expr_def.h"
 #include "udf/udf.h"
 #include "udf/udf_registry.h"
-#include "udf/default_defs/expr_def.h"
-#include "udf/default_defs/date_and_time_def.h"
 
 using openmldb::base::Date;
 using openmldb::base::StringRef;
@@ -46,7 +47,8 @@ namespace hybridse {
 namespace udf {
 
 DefaultUdfLibrary* DefaultUdfLibrary::MakeDefaultUdf() {
-    LOG(INFO) << "Creating DefaultUdfLibrary";
+    absl::Time begin = absl::Now();
+    absl::Cleanup clean = [&]() { LOG(INFO) << "Created DefaultUdfLibrary in " << absl::Now() - begin; };
     return new DefaultUdfLibrary();
 }
 
@@ -662,6 +664,7 @@ void DefaultUdfLibrary::Init() {
 
     InitWindowFunctions();
     InitUdaf();
+    InitFeatureSignature();
     InitFeatureZero();
 
     InitArrayUdfs();
@@ -907,6 +910,47 @@ void DefaultUdfLibrary::InitStringUdf() {
             @since 0.1.0)");
 
     RegisterAlias("substr", "substring");
+
+    RegisterExternal("locate")
+    .args<StringRef, StringRef>(
+        static_cast<int32_t (*)(StringRef*, StringRef*)>(udf::v1::locate))
+    .doc(R"(
+        @brief Returns the position of the first occurrence of substr in str. The given pos and return value are 1-based.
+                This is a version of the `locate` function where `pos` has a default value of 1.
+
+        Example:
+
+        @code{.sql}
+
+            select locate("wo", "hello world");
+            --output 7
+            
+        @endcode)");
+
+    RegisterExternal("locate")
+        .args<StringRef, StringRef, int32_t>(
+            static_cast<int32_t (*)(StringRef*, StringRef*, int32_t)>(udf::v1::locate))
+        .doc(R"(
+            @brief Returns the position of the first occurrence of substr in str after position pos. The given pos and return value are 1-based.
+
+            Example:
+
+            @code{.sql}
+
+                select locate("wo", "hello world", 2);
+                --output 7
+                
+                select locate("Wo", "hello world", 2);
+                --output 0
+                
+            @endcode
+
+            @param substr
+            @param str
+            @param pos: define the begining search position of the str.
+             - Negetive value is illegal and will return 0 directly;
+             - If substr is "" and pos less equal len(str) + 1, return pos, other case return 0;
+        )");
 
     RegisterExternal("strcmp")
         .args<StringRef, StringRef>(

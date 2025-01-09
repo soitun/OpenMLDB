@@ -19,12 +19,12 @@
 #include "absl/strings/match.h"
 #include "case/sql_case.h"
 #include "gtest/gtest.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/TargetSelect.h"
 #include "testing/test_base.h"
 #include "vm/sql_compiler.h"
 
 using namespace llvm;       // NOLINT
-using namespace llvm::orc;  // NOLINT
 
 ExitOnError ExitOnErr;
 
@@ -40,6 +40,9 @@ class RunnerTest : public ::testing::TestWithParam<SqlCase> {};
 INSTANTIATE_TEST_SUITE_P(
     SqlSimpleQueryParse, RunnerTest,
     testing::ValuesIn(sqlcase::InitCases("cases/plan/simple_query.yaml", FILTERS)));
+INSTANTIATE_TEST_SUITE_P(
+    SqlFeatureSignatureQueryParse, RunnerTest,
+    testing::ValuesIn(sqlcase::InitCases("cases/plan/feature_signature_query.yaml", FILTERS)));
 INSTANTIATE_TEST_SUITE_P(
     SqlWindowQueryParse, RunnerTest,
     testing::ValuesIn(sqlcase::InitCases("cases/plan/window_query.yaml", FILTERS)));
@@ -344,7 +347,7 @@ TEST_F(RunnerTest, KeyGeneratorTest) {
     sql_context.engine_mode = kBatchMode;
     base::Status compile_status;
     bool ok = sql_compiler.Compile(sql_context, compile_status);
-    ASSERT_TRUE(ok);
+    ASSERT_TRUE(ok && compile_status.isOK()) << compile_status;
     ASSERT_TRUE(sql_compiler.BuildClusterJob(sql_context, compile_status));
     ASSERT_TRUE(sql_context.physical_plan != nullptr);
 

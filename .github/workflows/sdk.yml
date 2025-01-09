@@ -40,10 +40,14 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       SQL_JAVASDK_ENABLE: ON
       OPENMLDB_BUILD_TARGET: "cp_native_so openmldb"
       MAVEN_OPTS: -Duser.home=/github/home
       SPARK_HOME: /tmp/spark/
+      # ref https://github.blog/changelog/2024-03-07-github-actions-all-actions-will-run-on-node20-instead-of-node16-by-default/
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
     steps:
       - uses: actions/checkout@v2
 
@@ -82,7 +86,7 @@ jobs:
 
       - name: upload linux library
         if: github.event_name == 'push'
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: shared-library-${{ github.sha }}
           path: |
@@ -102,14 +106,14 @@ jobs:
 
       - name: Upload Event File
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: event-file
           path: ${{ github.event_path }}
 
       - name: upload java ut results
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: linux-ut-result-java-${{ github.sha }}
           path: |
@@ -151,7 +155,7 @@ jobs:
     # mac job for java sdk. steps are almost same with job 'java-sdk'
     # except mvn deploy won't target all modules, just hybridse-native & openmldb-native
     # the job only run on tag push or manual workflow dispatch due to no test runs
-    runs-on: macos-latest
+    runs-on: macos-12
     needs:
       - java-sdk
     if: github.event_name == 'push'
@@ -160,7 +164,13 @@ jobs:
       OPENMLDB_BUILD_TARGET: "cp_native_so openmldb"
       NPROC: 3
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
+      # target on macOS >= 12.0
+      - name: Xcode Select Version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '14.0.1'
 
       - name: Cache local Maven repository
         uses: actions/cache@v3
@@ -251,8 +261,12 @@ jobs:
     container:
       image: ghcr.io/4paradigm/hybridsql:latest
     env:
+      ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION: node16
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
       SQL_PYSDK_ENABLE: ON
       OPENMLDB_BUILD_TARGET: "cp_python_sdk_so openmldb"
+      # ref https://github.blog/changelog/2024-03-07-github-actions-all-actions-will-run-on-node20-instead-of-node16-by-default/
+      ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
     steps:
       - uses: actions/checkout@v2
 
@@ -277,7 +291,7 @@ jobs:
 
       - name: upload python ut results
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: linux-ut-result-python-${{ github.sha }}
           path: |
@@ -307,12 +321,17 @@ jobs:
 
   python-sdk-mac:
     runs-on: macos-12
-    if: github.event_name == 'push'
     env:
       SQL_PYSDK_ENABLE: ON
       OPENMLDB_BUILD_TARGET: "cp_python_sdk_so openmldb"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
+
+      # target on macOS >= 12.0
+      - name: Xcode Select Version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '14.0.1'
 
       - name: prepare release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -323,9 +342,8 @@ jobs:
 
       - name: prepare python deps
         run: |
-          # Require importlib-metadata < 5.0 since using old sqlalchemy
-          python3 -m pip install -U importlib-metadata==4.12.0 setuptools wheel
-          brew install twine-pypi
+          python3 -m pip install wheel
+          brew install twine-pypi python-setuptools
           twine --version
 
       - name: build pysdk and sqlalchemy
@@ -338,7 +356,7 @@ jobs:
 
       - name: upload python ut results
         if: always()
-        uses: actions/upload-artifact@v2
+        uses: actions/upload-artifact@v3
         with:
           name: mac-ut-result-python-${{ github.sha }}
           path: |
@@ -356,49 +374,8 @@ jobs:
           TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}
           TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
 
-  go-sdk:
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/4paradigm/hybridsql:latest
-    env:
-      OPENMLDB_BUILD_TARGET: "openmldb"
-      OPENMLDB_MODE: standalone
-    steps:
-      - uses: actions/checkout@v2
-
-      - uses: actions/setup-go@v3
-        with:
-          go-version: 1.18
-
-      - name: build openmldb
-        run: make build install
-
-      - name: start server
-        run: ./openmldb/sbin/start-all.sh
-
-      - name: init test database
-        env:
-          OPENMLDB_NS_HOST: 127.0.0.1
-          OPENMLDB_NS_PORT: 6527
-        run: |
-          echo "CREATE DATABASE test_db;" | ./openmldb/bin/openmldb --host=$OPENMLDB_NS_HOST --port=$OPENMLDB_NS_PORT
-
-      - name: go test
-        env:
-          OPENMLDB_APISERVER_HOST: 127.0.0.1
-          OPENMLDB_APISERVER_PORT: 8080
-        working-directory: go
-        run: go test ./... -race -covermode=atomic -coverprofile=coverage.out
-
-      - name: upload coverage
-        uses: actions/upload-artifact@v3
-        with:
-          name: coverage-go-report-${{ github.sha }}
-          path: go/coverage.out
-          retention-days: 3
-
   publish-test-results:
-    needs: ["java-sdk", "python-sdk", "go-sdk"]
+    needs: ["java-sdk", "python-sdk"]
     # the action will only run on 4paradigm/OpenMLDB's context, not for fork repo or dependabot
     if: >
       always() && github.event_name == 'push' || (
@@ -414,7 +391,7 @@ jobs:
       comment_title: SDK Test Report
 
   publish-coverage-results:
-    needs: ["java-sdk", "python-sdk", "go-sdk"]
+    needs: ["java-sdk", "python-sdk"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -433,16 +410,11 @@ jobs:
           name: coverage-python-report-${{ github.sha }}
           path: python
 
-      - name: Download Artifacts (go)
-        uses: actions/download-artifact@v3
-        with:
-          name: coverage-go-report-${{ github.sha }}
-          path: go
-
       - name: Upload Coverage Report
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
-          files: go/coverage.out,python/openmldb_sdk/tests/coverage.xml,python/openmldb_tool/tests/coverage.xml,java/**/target/site/jacoco/jacoco.xml,java/**/target/scoverage.xml
+          files: python/openmldb_sdk/tests/coverage.xml,python/openmldb_tool/tests/coverage.xml,java/**/target/site/jacoco/jacoco.xml,java/**/target/scoverage.xml
           name: coverage-sdk
+          token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
           verbose: true

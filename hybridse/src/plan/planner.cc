@@ -39,6 +39,8 @@ inline bool IsCurRowRelativeWinFun(absl::string_view fn_name) {
            absl::EqualsIgnoreCase("lead", fn_name);
 }
 
+base::Status ConvertCall(const node::CallStmt* call, node::NodeManager* nm, node::CallStmtPlan** out);
+
 Planner::Planner(node::NodeManager *manager, const bool is_batch_mode, const bool is_cluster_optimized,
         const bool enable_batch_window_parallelization,
         const std::unordered_map<std::string, std::string>* extra_options)
@@ -452,9 +454,9 @@ base::Status Planner::CreateSetPlanNode(const node::SetNode *root, node::PlanNod
 base::Status Planner::CreateCreateTablePlan(const node::SqlNode *root, node::PlanNode **output) {
     CHECK_TRUE(nullptr != root, common::kPlanError, "fail to create table plan with null node")
     auto create_tree = dynamic_cast<const node::CreateStmt *>(root);
-    auto* out = node_manager_->MakeCreateTablePlanNode(create_tree->GetDbName(), create_tree->GetTableName(),
-                                                     create_tree->GetColumnDefList(), create_tree->GetTableOptionList(),
-                                                     create_tree->GetOpIfNotExist());
+    auto *out = node_manager_->MakeCreateTablePlanNode(
+        create_tree->GetDbName(), create_tree->GetTableName(), create_tree->GetTableElementList(),
+        create_tree->GetTableOptionList(), create_tree->GetOpIfNotExist());
     out->like_clause_ = create_tree->like_clause_;
     *output = out;
     return base::Status::OK();
@@ -710,7 +712,7 @@ base::Status SimplePlanner::CreatePlanTree(const NodePointVector &parser_trees, 
                 break;
             }
             case node::kInsertStmt: {
-                CHECK_TRUE(is_batch_mode_, common::kPlanError, "Non-support INSERT Op in online serving");
+                // CHECK_TRUE(is_batch_mode_, common::kPlanError, "Non-support INSERT Op in online serving");
                 node::PlanNode *insert_plan = nullptr;
                 CHECK_STATUS(CreateInsertPlan(parser_tree, &insert_plan))
                 plan_trees.push_back(insert_plan);
@@ -759,9 +761,37 @@ base::Status SimplePlanner::CreatePlanTree(const NodePointVector &parser_trees, 
                 plan_trees.push_back(deploy_plan_node);
                 break;
             }
+            case ::hybridse::node::kCreateUserStmt: {
+                auto node = dynamic_cast<node::CreateUserNode *>(parser_tree);
+                auto create_user_plan_node = node_manager_->MakeNode<node::CreateUserPlanNode>(node->Name(),
+                        node->IfNotExists(), node->Options());
+                plan_trees.push_back(create_user_plan_node);
+                break;
+            }
+            case ::hybridse::node::kGrantStmt: {
+                auto node = dynamic_cast<node::GrantNode *>(parser_tree);
+                auto grant_plan_node = node_manager_->MakeNode<node::GrantPlanNode>(
+                    node->TargetType(), node->Database(), node->Target(), node->Privileges(), node->IsAllPrivileges(),
+                    node->Grantees(), node->WithGrantOption());
+                plan_trees.push_back(grant_plan_node);
+                break;
+            }
+            case ::hybridse::node::kRevokeStmt: {
+                auto node = dynamic_cast<node::RevokeNode *>(parser_tree);
+                auto revoke_plan_node = node_manager_->MakeNode<node::RevokePlanNode>(
+                    node->TargetType(), node->Database(), node->Target(), node->Privileges(), node->IsAllPrivileges(),
+                    node->Grantees());
+                plan_trees.push_back(revoke_plan_node);
+                break;
+            }
+            case ::hybridse::node::kAlterUserStmt: {
+                auto node = dynamic_cast<node::AlterUserNode *>(parser_tree);
+                auto alter_user_plan_node = node_manager_->MakeNode<node::AlterUserPlanNode>(node->Name(),
+                        node->IfExists(), node->Options());
+                plan_trees.push_back(alter_user_plan_node);
+                break;
+            }
             case ::hybridse::node::kSetStmt: {
-                CHECK_TRUE(is_batch_mode_, common::kPlanError,
-                           "Non-support SET Op in online serving");
                 node::PlanNode *set_plan_node = nullptr;
                 CHECK_STATUS(CreateSetPlanNode(dynamic_cast<node::SetNode *>(parser_tree), &set_plan_node));
                 plan_trees.push_back(set_plan_node);
@@ -791,9 +821,19 @@ base::Status SimplePlanner::CreatePlanTree(const NodePointVector &parser_trees, 
             case ::hybridse::node::kAlterTableStmt: {
                 node::AlterTableStmtPlanNode* out = nullptr;
                 CHECK_STATUS(ConvertGuard<node::AlterTableStmt>(
-                    parser_tree, &out, [this](const node::AlterTableStmt *from, node::AlterTableStmtPlanNode **out) {
-                        *out = node_manager_->MakeNode<node::AlterTableStmtPlanNode>(from->db_, from->table_,
-                                                                                     from->actions_);
+                    parser_tree, &out,
+                    [](const node::AlterTableStmt *from, node::NodeManager *nm, node::AlterTableStmtPlanNode **out) {
+                        *out = nm->MakeNode<node::AlterTableStmtPlanNode>(from->db_, from->table_, from->actions_);
+                        return base::Status::OK();
+                    }));
+                plan_trees.push_back(out);
+                break;
+            }
+            case ::hybridse::node::kCallStmt: {
+                node::CallStmtPlan *out = nullptr;
+                CHECK_STATUS(ConvertGuard<node::CallStmt>(
+                    parser_tree, &out, [](const node::CallStmt *from, node::NodeManager *nm, node::CallStmtPlan **out) {
+                        *out = nm->MakeNode<node::CallStmtPlan>(from->procedure_name(), from->arguments());
                         return base::Status::OK();
                     }));
                 plan_trees.push_back(out);
@@ -1099,7 +1139,7 @@ bool Planner::ExpandCurrentHistoryWindow(std::vector<const node::WindowDefNode *
     }
     return has_window_expand;
 }
-
+// TODO(hw): unused
 base::Status Planner::TransformTableDef(const std::string &table_name, const NodePointVector &column_desc_list,
                                         type::TableDef *table) {
     std::set<std::string> index_names;
@@ -1152,12 +1192,13 @@ base::Status Planner::TransformTableDef(const std::string &table_name, const Nod
                                     node::DataTypeName(column_def->GetColumnType()), " is not supported")
                     }
                 }
+
+                column->mutable_schema()->set_base_type(column->type());
                 break;
             }
 
             case node::kColumnIndex: {
                 node::ColumnIndexNode *column_index = static_cast<node::ColumnIndexNode *>(column_desc);
-
                 if (column_index->GetName().empty()) {
                     column_index->SetName(PlanAPI::GenerateName("INDEX", table->indexes_size()));
                 }

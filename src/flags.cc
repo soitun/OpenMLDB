@@ -21,9 +21,12 @@ DEFINE_string(log_level, "debug", "Set the log level of servers, eg: debug or in
 DEFINE_int32(glog_level, 1, "set the glog level of CLI, default is WARN");
 DEFINE_string(glog_dir, "", "set the glog dir of CLI, default is empty, print to stdout");
 DEFINE_string(openmldb_log_dir, "./logs", "config the log dir of glog, for all log macro");
+DEFINE_int32(log_overdue_days, 0, "config the number of days to retain log files");
 DEFINE_string(role, "",
               "Set the openmldb role for start: tablet | nameserver | client | ns_client | sql_client | apiserver");
 DEFINE_string(cmd, "", "the command str, DO NOT add multi sqls");
+DEFINE_string(user, "root", "specify the user");
+DEFINE_string(password, "", "config the password");
 DEFINE_int32(zk_session_timeout, 2000,
              "config the zk session timeout of cli in milliseconds, apiserver, tablet or nameserver");
 DEFINE_uint32(tablet_heartbeat_timeout, 5 * 60 * 1000, "config the heartbeat of tablet offline. unit is milliseconds");
@@ -183,3 +186,8 @@ DEFINE_uint32(keep_log_file_num, 5, "Maximal info log files to be kept");
 DEFINE_int32(sync_job_timeout, 30 * 60 * 1000,
              "sync job timeout, unit is milliseconds, should <= server.channel_keep_alive_time in TaskManager");
 DEFINE_int32(deploy_job_max_wait_time_ms, 30 * 60 * 1000, "the max wait time of waiting deploy job");
+DEFINE_bool(skip_grant_tables, true, "skip the grant tables");
+
+// iot 
+// not exactly size, may plus some TODO(hw): too small?
+DEFINE_uint32(cidx_gc_max_size, 1000, "config the max size for one cidx segment gc");

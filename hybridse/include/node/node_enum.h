@@ -96,7 +96,13 @@ enum SqlNodeType {
     kShowStmt,
     kCompressType,
     kColumnSchema,
+    kCreateUserStmt,
+    kAlterUserStmt,
+    kGrantStmt,
+    kRevokeStmt,
+    kCallStmt,
     kSqlNodeTypeLast,  // debug type
+    kVariadicUdfDef,
 };
 
 enum class ShowStmtType {
@@ -141,8 +147,9 @@ enum ExprType {
     kExprIn,
     kExprEscaped,
     kExprArray,
-    kExprArrayElement,  // extract value from a array or map, with `[]` operator
-    kExprFake,          // not a real one
+    kExprArrayElement,      // extract value from a array or map, with `[]` operator
+    kExprStructCtorParens,  // (expr1, expr2, ...)
+    kExprFake,              // not a real one
     kExprLast = kExprFake,
 };
 
@@ -300,6 +307,8 @@ enum CmdType {
     kCmdShowJobLog,
     kCmdShowCreateTable,
     kCmdTruncate,
+    kCmdDropUser,
+    kCmdShowUser,
     kCmdFake,  // not a real cmd, for testing purpose only
     kLastCmd = kCmdFake,
 };
@@ -338,6 +347,11 @@ enum PlanType {
     kPlanTypeWithClauseEntry,
     kPlanTypeAlterTable,
     kPlanTypeShow,
+    kPlanTypeCreateUser,
+    kPlanTypeAlterUser,
+    kPlanTypeGrant,
+    kPlanTypeRevoke,
+    kPlanTypeCallStmt,
     kUnknowPlan = -1,
 };
 

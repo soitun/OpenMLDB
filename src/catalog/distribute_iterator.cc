@@ -155,7 +155,7 @@ bool FullTableIterator::NextFromRemote() {
             }
         } else {
             kv_it_ = iter->second->Traverse(tid_, cur_pid_, "", "", 0, FLAGS_traverse_cnt_limit, false, 0, count);
-            DLOG(INFO) << "count " << count;
+            DVLOG(1) << "count " << count;
         }
         if (kv_it_ && kv_it_->Valid()) {
             last_pk_ = kv_it_->GetLastPK();
@@ -423,7 +423,7 @@ const ::hybridse::codec::Row& RemoteWindowIterator::GetValue() {
     memcpy(copyed_row_data, slice_row.data(), sz);
     auto shared_slice = ::hybridse::base::RefCountedSlice::CreateManaged(copyed_row_data, sz);
     row_.Reset(shared_slice);
-    LOG(INFO) << "get value  pk " << pk_ << " ts_key " << kv_it_->GetKey() << " ts " << ts_;
+    DLOG(INFO) << "get value  pk " << pk_ << " ts_key " << kv_it_->GetKey() << " ts " << ts_;
     valid_value_ = true;
     return row_;
 }

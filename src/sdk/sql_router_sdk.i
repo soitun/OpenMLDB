@@ -71,6 +71,7 @@
 
 %shared_ptr(openmldb::sdk::DAGNode);
 %{
+#include "sdk/options.h"
 #include "sdk/sql_router.h"
 #include "sdk/result_set.h"
 #include "sdk/base_schema.h"
@@ -79,6 +80,7 @@
 #include "sdk/sql_insert_row.h"
 #include "sdk/sql_delete_row.h"
 #include "sdk/table_reader.h"
+#include "sdk/internal/system_variable.h"
 
 using hybridse::sdk::Schema;
 using hybridse::sdk::ColumnTypes;
@@ -98,6 +100,7 @@ using openmldb::sdk::TableReader;
 using openmldb::sdk::DefaultValueContainer;
 %}
 
+%include "sdk/options.h"
 %include "sdk/sql_router.h"
 %include "sdk/base_schema.h"
 %include "sdk/base.h"

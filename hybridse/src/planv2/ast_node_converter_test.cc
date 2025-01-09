@@ -742,7 +742,7 @@ TEST_F(ASTNodeConverterTest, ConvertCreateFunctionOKTest) {
     auto option = create_fun_stmt->Options();
     ASSERT_EQ(option->size(), 1);
     ASSERT_EQ(option->begin()->first, "PATH");
-    ASSERT_EQ(option->begin()->second->GetAsString(), "/tmp/libmyfun.so");
+    ASSERT_EQ(option->begin()->second->GetExprString(), "/tmp/libmyfun.so");
 
     std::string sql2 = "CREATE AGGREGATE FUNCTION fun1 (x BIGINT) RETURNS STRING OPTIONS (PATH='/tmp/libmyfun.so');";
     create_fun_stmt = nullptr;
@@ -867,12 +867,6 @@ TEST_F(ASTNodeConverterTest, ConvertInsertStmtFailTest) {
         INSERT into t1 values (1, @ a, @ b)
         )sql";
         expect_converted(sql, common::kSqlAstError, "Un-support Named Parameter Expression a");
-    }
-    {
-        const std::string sql = R"sql(
-        INSERT into t1 values (1, 2L, aaa)
-        )sql";
-        expect_converted(sql, common::kSqlAstError, "Un-support insert statement with un-const value");
     }
 }
 TEST_F(ASTNodeConverterTest, ConvertStmtFailTest) {
@@ -1193,6 +1187,8 @@ INSTANTIATE_TEST_SUITE_P(ASTHWindowQueryTest, ASTNodeConverterTest,
                          testing::ValuesIn(sqlcase::InitCases("cases/plan/window_query.yaml", FILTERS)));
 INSTANTIATE_TEST_SUITE_P(ASTUnionQueryTest, ASTNodeConverterTest,
                          testing::ValuesIn(sqlcase::InitCases("cases/plan/union_query.yaml", FILTERS)));
+INSTANTIATE_TEST_SUITE_P(ASTAlterTest, ASTNodeConverterTest,
+                         testing::ValuesIn(sqlcase::InitCases("cases/plan/alter.yaml", FILTERS)));
 INSTANTIATE_TEST_SUITE_P(ASTConstQueryTest, ASTNodeConverterTest,
                          testing::ValuesIn(sqlcase::InitCases("cases/plan/const_query.yaml", FILTERS)));
 }  // namespace plan

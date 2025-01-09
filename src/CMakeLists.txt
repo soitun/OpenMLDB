@@ -56,11 +56,22 @@ function(compile_lib LIB_NAME DIR DEPEND_FILE_LIST)
     set(FILE_STR_LIST "${FILE_STR_LIST} ${DEPEND_FILE_LIST}")
     string(REPLACE " " ";" FILE_LIST ${FILE_STR_LIST})
     add_library(${LIB_NAME} STATIC ${FILE_LIST} $<TARGET_OBJECTS:openmldb_proto>)
+
+    # TODO: Fix me after upgrade Boost or fix nonnull errors in Boost
+    target_compile_options(${LIB_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-error=nonnull>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=nonnull>
+    )
+    target_compile_options(${LIB_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wno-nonnull>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-nonnull>
+    )
+
 endfunction(compile_lib)
 
 set(TEST_LIBS
     openmldb_test_base apiserver nameserver tablet query_response_time openmldb_sdk
-    openmldb_catalog client zk_client storage schema replica base openmldb_codec openmldb_proto log
+    openmldb_catalog client zk_client storage schema replica openmldb_codec base auth openmldb_proto log
     common zookeeper_mt tcmalloc_minimal ${RocksDB_LIB} ${VM_LIBS} ${LLVM_LIBS} ${ZETASQL_LIBS} ${BRPC_LIBS})
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "9.1")
     # GNU implementation prior to 9.1 requires linking with -lstdc++fs
@@ -122,8 +133,8 @@ set_property(
   PROPERTY ADDITIONAL_CLEAN_FILES ${PROTO_FILES}
 )
 
-add_library(openmldb_flags STATIC flags.cc)
-
+add_library(openmldb_flags flags.cc)
+compile_lib(auth auth "")
 compile_lib(openmldb_codec codec "")
 compile_lib(openmldb_catalog catalog "")
 compile_lib(schema schema "")
@@ -141,7 +152,7 @@ compile_lib(apiserver apiserver "")
 find_package(yaml-cpp REQUIRED)
 set(yaml_libs yaml-cpp)
 
-set(BUILTIN_LIBS apiserver nameserver tablet query_response_time openmldb_sdk openmldb_catalog client zk_client replica base storage openmldb_codec schema openmldb_proto log ${RocksDB_LIB})
+set(BUILTIN_LIBS apiserver nameserver tablet query_response_time openmldb_sdk openmldb_catalog client zk_client replica base storage openmldb_codec schema openmldb_proto log auth ${RocksDB_LIB})
 set(BIN_LIBS ${BUILTIN_LIBS}
 common zookeeper_mt tcmalloc_minimal
 ${VM_LIBS}
@@ -152,6 +163,7 @@ ${BRPC_LIBS})
 if(TESTING_ENABLE)
     add_subdirectory(test)
     compile_test(cmd)
+    compile_test(auth)
     compile_test(base)
     compile_test(codec)
     compile_test(zk)

@@ -18,6 +18,8 @@
 #define HYBRIDSE_SRC_CODEGEN_STRUCT_IR_BUILDER_H_
 
 #include <string>
+#include <vector>
+#include <memory>
 
 #include "absl/status/statusor.h"
 #include "base/fe_status.h"
@@ -29,11 +31,13 @@ namespace codegen {
 
 class StructTypeIRBuilder : public TypeIRBuilder {
  public:
-    // TODO(ace): construct with CodeGenContext instead of llvm::Module
     explicit StructTypeIRBuilder(::llvm::Module*);
     ~StructTypeIRBuilder();
 
-    static StructTypeIRBuilder* CreateStructTypeIRBuilder(::llvm::Module*, ::llvm::Type*);
+    // construct corresponding struct ir builder if exists for input type,
+    // otherwise, error status returned
+    static absl::StatusOr<std::unique_ptr<StructTypeIRBuilder>> CreateStructTypeIRBuilder(::llvm::Module*,
+                                                                                          ::llvm::Type*);
     static bool StructCopyFrom(::llvm::BasicBlock* block, ::llvm::Value* src, ::llvm::Value* dist);
 
     virtual bool CopyFrom(::llvm::BasicBlock* block, ::llvm::Value* src, ::llvm::Value* dist) = 0;
@@ -45,20 +49,30 @@ class StructTypeIRBuilder : public TypeIRBuilder {
     virtual bool CreateDefault(::llvm::BasicBlock* block, ::llvm::Value** output) = 0;
 
     // Allocate and Initialize the struct value from args, each element in list represent exact argument in SQL literal.
-    // So for map data type, we create it in SQL with `map(key1, value1, ...)`, args is key or value for the result map
-    virtual absl::StatusOr<NativeValue> Construct(CodeGenContext* ctx, absl::Span<const NativeValue> args) const;
+    // For example with map data type, we create it in SQL with `map(key1, value1, ...)`, args is key or value for the
+    // result map
+    virtual absl::StatusOr<NativeValue> Construct(CodeGenContextBase* ctx, absl::Span<const NativeValue> args) const;
 
     // construct struct value from llvm values, each element in list represent exact
     // llvm struct field at that index
-    virtual absl::StatusOr<::llvm::Value*> ConstructFromRaw(CodeGenContext* ctx,
+    virtual absl::StatusOr<::llvm::Value*> ConstructFromRaw(CodeGenContextBase* ctx,
                                                             absl::Span<::llvm::Value* const> args) const;
+
+    virtual absl::Status Initialize(CodeGenContextBase* ctx, ::llvm::Value* alloca,
+                                    absl::Span<llvm::Value* const> args) const;
 
     // Extract element value from composite data type
     // 1. extract from array type by index
     // 2. extract from struct type by field name
     // 3. extract from map type by key
-    virtual absl::StatusOr<NativeValue> ExtractElement(CodeGenContext* ctx, const NativeValue& arr,
+    virtual absl::StatusOr<NativeValue> ExtractElement(CodeGenContextBase* ctx, const NativeValue& arr,
                                                        const NativeValue& key) const;
+
+    // Get size of the elements inside value {arr}
+    // - if {arr} is array/map, return size of array/map
+    // - if {arr} is struct, return number of struct fields
+    // - otherwise report error
+    virtual absl::StatusOr<llvm::Value*> NumElements(CodeGenContextBase* ctx, llvm::Value* arr) const;
 
     ::llvm::Type* GetType() const;
 
@@ -78,7 +92,11 @@ class StructTypeIRBuilder : public TypeIRBuilder {
     // Get the address of 'idx' th field
     bool Get(::llvm::BasicBlock* block, ::llvm::Value* struct_value, unsigned int idx, ::llvm::Value** output) const;
 
-    absl::Status Set(CodeGenContext* ctx, ::llvm::Value* struct_value, absl::Span<::llvm::Value* const> members) const;
+    absl::Status Set(CodeGenContextBase* ctx, ::llvm::Value* struct_value,
+                     absl::Span<::llvm::Value* const> members) const;
+
+    // Load and return all fields from struct value pointer
+    absl::StatusOr<std::vector<llvm::Value*>> Load(CodeGenContextBase* ctx, llvm::Value* struct_ptr) const;
 
     void EnsureOK() const;
 
@@ -86,6 +104,15 @@ class StructTypeIRBuilder : public TypeIRBuilder {
     ::llvm::Module* m_;
     ::llvm::StructType* struct_type_;
 };
+
+// construct a safe null value for type
+// returns NativeValue{raw, is_null=true} on success, raw is ensured to be not nullptr
+absl::StatusOr<NativeValue> CreateSafeNull(::llvm::BasicBlock* block, ::llvm::Type* type);
+
+// Do the cartesian product for a list of arrry
+// output a array of string, each value is a pair (A1, B2, C3...), as "A1-B2-C3-...", "-" is the delimiter
+absl::StatusOr<NativeValue> Combine(CodeGenContextBase* ctx, const NativeValue delimiter,
+                                    absl::Span<const NativeValue> args);
 }  // namespace codegen
 }  // namespace hybridse
 #endif  // HYBRIDSE_SRC_CODEGEN_STRUCT_IR_BUILDER_H_

@@ -40,8 +40,8 @@ endif()
 message (STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 message (STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 set(OPENMLDB_VERSION_MAJOR 0)
-set(OPENMLDB_VERSION_MINOR 8)
-set(OPENMLDB_VERSION_BUG 4)
+set(OPENMLDB_VERSION_MINOR 9)
+set(OPENMLDB_VERSION_BUG 3)
 
 function(get_commitid CODE_DIR COMMIT_ID)
     find_package(Git REQUIRED)
@@ -121,14 +121,11 @@ find_package(SWIG REQUIRED)
 include(UseSWIG)
 
 find_package(OpenSSL REQUIRED)
-find_library(BRPC_LIBRARY brpc)
 
 set(Protobuf_USE_STATIC_LIBS ON)
 find_package(Protobuf 3.6 EXACT REQUIRED)
 message(STATUS "Found Protobuf Libraries: ${Protobuf_LIBRARIES}")
 
-find_library(GLOG_LIBRARY glog)
-find_library(GFLAGS_LIBRARY gflags)
 find_library(UNWIND_LIBRARY unwind)
 find_library(LEVELDB_LIBRARY leveldb)
 find_library(Z_LIBRARY z)
@@ -142,14 +139,30 @@ else()
     set(RocksDB_LIB ${RocksDB_LIBRARY})
 endif()
 
-# third party sources
-include(FetchContent)
 set(FETCHCONTENT_QUIET OFF)
-include(farmhash)
-include(rapidjson)
 
 # contrib libs
 add_subdirectory(contrib EXCLUDE_FROM_ALL)
+
+if (BUILD_SHARED_LIBS)
+    # For shared build, gflags/glog requires shared lib,
+    # in case runtime problem arrise from java, a common issue is #3407:
+    # > ERROR: something wrong with flag 'logtostderr' in file 'src/logging.cc'. One possibility: file 'src/logging.cc' is being linked both statically and dynamically into this executable.
+    set(GLOG_LIBRARY glog::glog)
+    get_target_property(gflags_real gflags::gflags ALIASED_TARGET)
+    message(STATUS "link with gflags library: ${gflags_real}")
+    set(GFLAGS_LIBRARY gflags::gflags)
+else()
+    # 'CONFIG' is mandatory: pre-compiled thirdparty skip a Findgflags.cmake not work well
+    find_package(gflags REQUIRED COMPONENTS static CONFIG)
+    set(GFLAGS_LIBRARY ${gflags_LIBRARIES})
+
+    find_library(GLOG_LIBRARY NAMES libglog.a REQUIRED)
+endif()
+
+find_library(BRPC_LIBRARY NAMES libbrpc.a REQUIRED)
+message(STATUS "Found GFLAGS LIBRARY: ${GFLAGS_LIBRARY}")
+message(STATUS "Found GLOG LIBRARY: ${GLOG_LIBRARY}")
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(OS_LIB ${CMAKE_THREAD_LIBS_INIT} rt)
@@ -281,6 +294,7 @@ include_directories(
   ${LLVM_INCLUDE_DIRS}
   ${Boost_INCLUDE_DIRS}
   ${CMAKE_PREFIX_PATH}/include
+  ${PROJECT_SOURCE_DIR}/contrib/rapidjson/include
 )
 
 link_directories(
@@ -315,7 +329,7 @@ message(STATUS "CMAKE_INSTALL_PREFIX: ${CMAKE_INSTALL_PREFIX}")
 FILE(GLOB OPENMLDB_BINS "${CMAKE_SOURCE_DIR}/release/bin/*")
 FILE(GLOB OPENMLDB_SBINS "${CMAKE_SOURCE_DIR}/release/sbin/*")
 FILE(GLOB OPENMLDB_CONFS "${CMAKE_SOURCE_DIR}/release/conf/*")
-FILE(GLOB OPENMLDB_TOOLS "${CMAKE_SOURCE_DIR}/tools/*")
+set(OPENMLDB_TOOLS "${CMAKE_SOURCE_DIR}/tools/")
 
 install(
   FILES ${OPENMLDB_BINS}
@@ -329,8 +343,15 @@ install(
 )
 install(FILES ${OPENMLDB_CONFS} DESTINATION conf)
 install(
-  FILES ${OPENMLDB_TOOLS}
+  DIRECTORY ${OPENMLDB_TOOLS}
   DESTINATION tools
-  PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
+  FILE_PERMISSIONS
+    OWNER_READ OWNER_EXECUTE OWNER_WRITE
+    GROUP_READ GROUP_EXECUTE
+    WORLD_READ WORLD_EXECUTE
+  DIRECTORY_PERMISSIONS
+    OWNER_READ OWNER_EXECUTE OWNER_WRITE
+    GROUP_READ GROUP_EXECUTE GROUP_WRITE
+    WORLD_READ WORLD_EXECUTE
 )
 install(DIRECTORY DESTINATION udf)

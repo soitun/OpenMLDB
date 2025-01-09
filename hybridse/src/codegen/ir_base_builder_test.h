@@ -197,14 +197,12 @@ class ModuleTestFunction {
                        std::unique_ptr<::llvm::LLVMContext> llvm_ctx) {
         llvm::InitializeNativeTarget();
         llvm::InitializeNativeTargetAsmPrinter();
-        jit = std::unique_ptr<vm::HybridSeJitWrapper>(
-            vm::HybridSeJitWrapper::Create());
-        jit->Init();
-        InitBuiltinJitSymbols(jit.get());
-        if (library != nullptr) {
-            library->InitJITSymbols(jit.get());
-        } else {
-            udf::DefaultUdfLibrary::get()->InitJITSymbols(jit.get());
+        base::Status s;
+        jit =
+            std::unique_ptr<vm::HybridSeJitWrapper>(vm::HybridSeJitWrapper::CreateWithDefaultSymbols(library, &s, {}));
+        if (jit == nullptr || !s.isOK()) {
+            LOG(WARNING) << "create jit failed" << s;
+            return;
         }
 
         llvm::errs() << *(module.get()) << "\n";
@@ -360,7 +358,11 @@ void ModuleFunctionBuilderWithFullInfo<Ret, Args...>::ExpandApplyArg(
             if (TypeIRBuilder::IsStructPtr(expect_ty)) {
                 auto struct_builder =
                     StructTypeIRBuilder::CreateStructTypeIRBuilder(function->getEntryBlock().getModule(), expect_ty);
-                struct_builder->CreateDefault(&function->getEntryBlock(),
+                if (!struct_builder.ok()) {
+                    LOG(WARNING) << struct_builder.status();
+                    return;
+                }
+                struct_builder.value()->CreateDefault(&function->getEntryBlock(),
                                               &alloca);
                 arg = builder.CreateSelect(
                     is_null, alloca, builder.CreatePointerCast(arg, expect_ty));

@@ -19,6 +19,7 @@
 #include <string>
 
 #include "absl/algorithm/container.h"
+#include "absl/strings/str_join.h"
 namespace hybridse {
 namespace node {
 
@@ -224,6 +225,12 @@ std::string NameOfPlanNodeType(const PlanType &type) {
             return "kPlanTypeShow";
         case kPlanTypeAlterTable:
             return "kPlanTypeAlterTable";
+        case kPlanTypeCreateUser:
+            return "kPlanTypeCreateUser";
+        case kPlanTypeAlterUser:
+            return "kPlanTypeAlterUser";
+        case kPlanTypeCallStmt:
+            return "kPlanTypeCallStmt";
         case kUnknowPlan:
             return std::string("kUnknow");
     }
@@ -708,6 +715,28 @@ void DeployPlanNode::Print(std::ostream &output, const std::string &tab) const {
     PrintSqlNode(output, new_tab, Stmt(), "stmt", true);
 }
 
+void CreateUserPlanNode::Print(std::ostream &output, const std::string &tab) const {
+    PlanNode::Print(output, tab);
+    output << "\n";
+    std::string new_tab = tab + INDENT;
+    PrintValue(output, new_tab, IfNotExists() ? "true": "false", "if_not_exists", false);
+    output << "\n";
+    PrintValue(output, new_tab, Name(), "name", false);
+    output << "\n";
+    PrintValue(output, new_tab, Options().get(), "options", true);
+}
+
+void AlterUserPlanNode::Print(std::ostream &output, const std::string &tab) const {
+    PlanNode::Print(output, tab);
+    output << "\n";
+    std::string new_tab = tab + INDENT;
+    PrintValue(output, new_tab, IfExists() ? "true": "false", "if_exists", false);
+    output << "\n";
+    PrintValue(output, new_tab, Name(), "name", false);
+    output << "\n";
+    PrintValue(output, new_tab, Options().get(), "options", true);
+}
+
 void LoadDataPlanNode::Print(std::ostream &output, const std::string &org_tab) const {
     PlanNode::Print(output, org_tab);
 
@@ -841,5 +870,16 @@ void AlterTableStmtPlanNode::Print(std::ostream &output, const std::string &org_
     }
 }
 
+void CallStmtPlan::Print(std::ostream &output, const std::string &org_tab) const {
+    LeafPlanNode::Print(output, org_tab);
+    output << "\n";
+    auto tab = org_tab + INDENT;
+    PrintValue(output, tab, procedure_name_, "procedure_name", false);
+    output << "\n";
+    PrintValue(output, tab,
+               absl::StrJoin(arguments_, ", ",
+                             [](std::string *out, const ExprNode *n) { absl::StrAppend(out, n->GetExprString()); }),
+               "arguments", true);
+}
 }  // namespace node
 }  // namespace hybridse

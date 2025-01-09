@@ -34,7 +34,7 @@ class ArrayIRBuilder : public StructTypeIRBuilder {
     ~ArrayIRBuilder() override {}
 
     // create a new array from `elements` as value
-    absl::StatusOr<NativeValue> Construct(CodeGenContext* ctx, absl::Span<const NativeValue> args) const override;
+    absl::StatusOr<NativeValue> Construct(CodeGenContextBase* ctx, absl::Span<const NativeValue> args) const override;
 
     bool CopyFrom(::llvm::BasicBlock* block, ::llvm::Value* src, ::llvm::Value* dist) override { return true; }
 
@@ -42,10 +42,20 @@ class ArrayIRBuilder : public StructTypeIRBuilder {
         CHECK_TRUE(false, common::kCodegenError, "casting to array un-implemented");
     };
 
- private:
-    void InitStructType() override;
+    absl::StatusOr<llvm::Value*> CastToArrayString(CodeGenContextBase* ctx, llvm::Value* src);
+
+    absl::StatusOr<NativeValue> ExtractElement(CodeGenContextBase* ctx, const NativeValue& arr,
+                                               const NativeValue& key) const override;
+
+    absl::StatusOr<llvm::Value*> NumElements(CodeGenContextBase* ctx, llvm::Value* arr) const override;
 
     bool CreateDefault(::llvm::BasicBlock* block, ::llvm::Value** output) override;
+
+    absl::Status Initialize(CodeGenContextBase* ctx, ::llvm::Value* alloca,
+                            absl::Span<llvm::Value* const> args) const override;
+
+ private:
+    void InitStructType() override;
 
  private:
     ::llvm::Type* element_type_ = nullptr;

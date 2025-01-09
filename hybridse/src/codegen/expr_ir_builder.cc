@@ -229,7 +229,7 @@ Status ExprIRBuilder::BuildConstExpr(
     ::llvm::IRBuilder<> builder(ctx_->GetCurrentBlock());
     switch (const_node->GetDataType()) {
         case ::hybridse::node::kNull: {
-            *output = NativeValue(nullptr, nullptr, llvm::Type::getTokenTy(builder.getContext()));
+            *output = NativeValue(nullptr, nullptr, llvm::Type::getVoidTy(builder.getContext()));
             break;
         }
         case ::hybridse::node::kBool: {
@@ -524,9 +524,7 @@ Status ExprIRBuilder::BuildParameterExpr(const ::hybridse::node::ParameterExpr* 
     // Since parameter row has only one slice, the schema idx should be 0
     size_t schema_idx = 0;
     CHECK_STATUS(ExtractSliceFromRow(parameter_row, schema_idx, &slice_ptr, &slice_size))
-    BufNativeIRBuilder buf_builder(
-        schema_idx, ctx_->parameter_row_format(),
-        ctx_->GetCurrentBlock(), ctx_->GetCurrentScope()->sv());
+    BufNativeIRBuilder buf_builder(ctx_, schema_idx, ctx_->parameter_row_format());
     CHECK_TRUE(
         buf_builder.BuildGetField(parameter->position()-1, slice_ptr, slice_size, output),
         kCodegenError, "Fail to get ", parameter->position(), "th parameter value")
@@ -651,14 +649,10 @@ Status ExprIRBuilder::BuildCastExpr(const ::hybridse::node::CastExprNode* node,
 
     CastExprIRBuilder cast_builder(ctx_->GetCurrentBlock());
     ::llvm::Type* cast_type = NULL;
-    CHECK_TRUE(GetLlvmType(ctx_->GetModule(), node->cast_type_, &cast_type),
-               kCodegenError, "Fail to cast expr: dist type invalid");
+    CHECK_TRUE(GetLlvmType(ctx_->GetModule(), node->cast_type(), &cast_type), kCodegenError,
+               "Fail to cast expr: dist type invalid");
 
-    if (cast_builder.IsSafeCast(left.GetType(), cast_type)) {
-        return cast_builder.SafeCast(left, cast_type, output);
-    } else {
-        return cast_builder.UnSafeCast(left, cast_type, output);
-    }
+    return cast_builder.Cast(left, cast_type, output);
 }
 
 Status ExprIRBuilder::BuildBinaryExpr(const ::hybridse::node::BinaryExpr* node,
@@ -1009,9 +1003,7 @@ Status ExprIRBuilder::BuildGetFieldExpr(
         ::llvm::Value* slice_ptr = nullptr;
         ::llvm::Value* slice_size = nullptr;
         CHECK_STATUS(ExtractSliceFromRow(input_value, schema_idx, &slice_ptr, &slice_size))
-        BufNativeIRBuilder buf_builder(
-            schema_idx, schemas_context->GetRowFormat(),
-            ctx_->GetCurrentBlock(), ctx_->GetCurrentScope()->sv());
+        BufNativeIRBuilder buf_builder(ctx_, schema_idx, schemas_context->GetRowFormat());
         CHECK_TRUE(
             buf_builder.BuildGetField(col_idx, slice_ptr, slice_size, output),
             kCodegenError);

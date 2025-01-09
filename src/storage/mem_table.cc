@@ -17,6 +17,7 @@
 #include "storage/mem_table.h"
 
 #include <snappy.h>
+
 #include <algorithm>
 #include <utility>
 
@@ -26,8 +27,8 @@
 #include "common/timer.h"
 #include "gflags/gflags.h"
 #include "schema/index_util.h"
-#include "storage/record.h"
 #include "storage/mem_table_iterator.h"
+#include "storage/record.h"
 
 DECLARE_uint32(skiplist_max_height);
 DECLARE_uint32(skiplist_max_height);
@@ -54,7 +55,7 @@ MemTable::MemTable(const ::openmldb::api::TableMeta& table_meta)
     : Table(table_meta.storage_mode(), table_meta.name(), table_meta.tid(), table_meta.pid(), 0, true, 60 * 1000,
             std::map<std::string, uint32_t>(), ::openmldb::type::TTLType::kAbsoluteTime,
             ::openmldb::type::CompressType::kNoCompress),
-    segments_(MAX_INDEX_NUM, nullptr) {
+      segments_(MAX_INDEX_NUM, nullptr) {
     seg_cnt_ = 8;
     enable_gc_ = true;
     segment_released_ = false;
@@ -80,7 +81,7 @@ MemTable::~MemTable() {
     PDLOG(INFO, "drop memtable. tid %u pid %u", id_, pid_);
 }
 
-bool MemTable::Init() {
+bool MemTable::InitMeta() {
     key_entry_max_height_ = FLAGS_key_entry_max_height;
     if (!InitFromMeta()) {
         return false;
@@ -88,21 +89,33 @@ bool MemTable::Init() {
     if (table_meta_->seg_cnt() > 0) {
         seg_cnt_ = table_meta_->seg_cnt();
     }
+    return true;
+}
+
+uint32_t MemTable::KeyEntryMaxHeight(const std::shared_ptr<InnerIndexSt>& inner_idx) {
     uint32_t global_key_entry_max_height = 0;
     if (table_meta_->has_key_entry_max_height() && table_meta_->key_entry_max_height() <= FLAGS_skiplist_max_height &&
         table_meta_->key_entry_max_height() > 0) {
         global_key_entry_max_height = table_meta_->key_entry_max_height();
     }
+    if (global_key_entry_max_height > 0) {
+        return global_key_entry_max_height;
+    } else {
+        return inner_idx->GetKeyEntryMaxHeight(FLAGS_absolute_default_skiplist_height,
+                                                                   FLAGS_latest_default_skiplist_height);
+    }
+}
+bool MemTable::Init() {
+    if (!InitMeta()) {
+        LOG(WARNING) << "init meta failed. tid " << id_ << " pid " << pid_;
+        return false;
+    }
+
     auto inner_indexs = table_index_.GetAllInnerIndex();
     for (uint32_t i = 0; i < inner_indexs->size(); i++) {
         const std::vector<uint32_t>& ts_vec = inner_indexs->at(i)->GetTsIdx();
-        uint32_t cur_key_entry_max_height = 0;
-        if (global_key_entry_max_height > 0) {
-            cur_key_entry_max_height = global_key_entry_max_height;
-        } else {
-            cur_key_entry_max_height = inner_indexs->at(i)->GetKeyEntryMaxHeight(FLAGS_absolute_default_skiplist_height,
-                                                                                 FLAGS_latest_default_skiplist_height);
-        }
+        uint32_t cur_key_entry_max_height = KeyEntryMaxHeight(inner_indexs->at(i));
+
         Segment** seg_arr = new Segment*[seg_cnt_];
         if (!ts_vec.empty()) {
             for (uint32_t j = 0; j < seg_cnt_; j++) {
@@ -145,10 +158,6 @@ absl::Status MemTable::Put(uint64_t time, const std::string& value, const Dimens
         PDLOG(WARNING, "empty dimension. tid %u pid %u", id_, pid_);
         return absl::InvalidArgumentError(absl::StrCat(id_, ".", pid_, ": empty dimension"));
     }
-    if (value.length() < codec::HEADER_LENGTH) {
-        PDLOG(WARNING, "invalid value. tid %u pid %u", id_, pid_);
-        return absl::InvalidArgumentError(absl::StrCat(id_, ".", pid_, ": invalid value"));
-    }
     // inner index pos: -1 means invalid, so it's positive in inner_index_key_map
     std::map<int32_t, Slice> inner_index_key_map;
     for (auto iter = dimensions.begin(); iter != dimensions.end(); iter++) {
@@ -161,9 +170,15 @@ absl::Status MemTable::Put(uint64_t time, const std::string& value, const Dimens
     uint32_t real_ref_cnt = 0;
     const int8_t* data = reinterpret_cast<const int8_t*>(value.data());
     std::string uncompress_data;
+    uint32_t data_length = value.length();
     if (GetCompressType() == openmldb::type::kSnappy) {
         snappy::Uncompress(value.data(), value.size(), &uncompress_data);
         data = reinterpret_cast<const int8_t*>(uncompress_data.data());
+        data_length = uncompress_data.length();
+    }
+    if (data_length < codec::HEADER_LENGTH) {
+        PDLOG(WARNING, "invalid value. tid %u pid %u", id_, pid_);
+        return absl::InvalidArgumentError(absl::StrCat(id_, ".", pid_, ": invalid value"));
     }
     uint8_t version = codec::RowView::GetSchemaVersion(data);
     auto decoder = GetVersionDecoder(version);
@@ -224,10 +239,8 @@ absl::Status MemTable::Put(uint64_t time, const std::string& value, const Dimens
 }
 
 bool MemTable::Delete(const ::openmldb::api::LogEntry& entry) {
-    std::optional<uint64_t> start_ts = entry.has_ts() ? std::optional<uint64_t>{entry.ts()}
-                                                         : std::nullopt;
-    std::optional<uint64_t> end_ts = entry.has_end_ts() ? std::optional<uint64_t>{entry.end_ts()}
-                                                         : std::nullopt;
+    std::optional<uint64_t> start_ts = entry.has_ts() ? std::optional<uint64_t>{entry.ts()} : std::nullopt;
+    std::optional<uint64_t> end_ts = entry.has_end_ts() ? std::optional<uint64_t>{entry.end_ts()} : std::nullopt;
     if (entry.dimensions_size() > 0) {
         for (const auto& dimension : entry.dimensions()) {
             if (!Delete(dimension.idx(), dimension.key(), start_ts, end_ts)) {
@@ -257,8 +270,8 @@ bool MemTable::Delete(const ::openmldb::api::LogEntry& entry) {
     return true;
 }
 
-bool MemTable::Delete(uint32_t idx, const std::string& key,
-        const std::optional<uint64_t>& start_ts, const std::optional<uint64_t>& end_ts) {
+bool MemTable::Delete(uint32_t idx, const std::string& key, const std::optional<uint64_t>& start_ts,
+                      const std::optional<uint64_t>& end_ts) {
     auto index_def = GetIndex(idx);
     if (!index_def || !index_def->IsReady()) {
         return false;
@@ -334,7 +347,7 @@ void MemTable::SchedGc() {
                 for (uint32_t k = 0; k < seg_cnt_; k++) {
                     if (segments_[i][k] != nullptr) {
                         StatisticsInfo statistics_info(segments_[i][k]->GetTsCnt());
-                       if (real_index.size() == 1 || deleting_pos.size() + deleted_num == real_index.size()) {
+                        if (real_index.size() == 1 || deleting_pos.size() + deleted_num == real_index.size()) {
                             segments_[i][k]->ReleaseAndCount(&statistics_info);
                         } else {
                             segments_[i][k]->ReleaseAndCount(deleting_pos, &statistics_info);
@@ -375,8 +388,8 @@ void MemTable::SchedGc() {
     }
     consumed = ::baidu::common::timer::get_micros() - consumed;
     record_byte_size_.fetch_sub(gc_record_byte_size, std::memory_order_relaxed);
-    PDLOG(INFO, "gc finished, gc_idx_cnt %lu, consumed %lu ms for table %s tid %u pid %u",
-          gc_idx_cnt, consumed / 1000, name_.c_str(), id_, pid_);
+    PDLOG(INFO, "gc finished, gc_idx_cnt %lu, consumed %lu ms for table %s tid %u pid %u", gc_idx_cnt, consumed / 1000,
+          name_.c_str(), id_, pid_);
     UpdateTTL();
 }
 
@@ -617,115 +630,24 @@ bool MemTable::GetRecordIdxCnt(uint32_t idx, uint64_t** stat, uint32_t* size) {
     return true;
 }
 
-bool MemTable::AddIndex(const ::openmldb::common::ColumnKey& column_key) {
-    // TODO(denglong): support ttl type and merge index
-    auto table_meta = GetTableMeta();
-    auto new_table_meta = std::make_shared<::openmldb::api::TableMeta>(*table_meta);
-    std::shared_ptr<IndexDef> index_def = GetIndex(column_key.index_name());
-    if (index_def) {
-        if (index_def->GetStatus() != IndexStatus::kDeleted) {
-            PDLOG(WARNING, "index %s is exist. tid %u pid %u", column_key.index_name().c_str(), id_, pid_);
-            return false;
-        }
-        if (column_key.has_ttl()) {
-            index_def->SetTTL(::openmldb::storage::TTLSt(column_key.ttl()));
-        }
+bool MemTable::AddIndexToTable(const std::shared_ptr<IndexDef>& index_def) {
+    std::vector<uint32_t> ts_vec = {index_def->GetTsColumn()->GetId()};
+    uint32_t inner_id = index_def->GetInnerPos();
+    Segment** seg_arr = new Segment*[seg_cnt_];
+    for (uint32_t j = 0; j < seg_cnt_; j++) {
+        seg_arr[j] = new Segment(FLAGS_absolute_default_skiplist_height, ts_vec);
+        PDLOG(INFO, "init %u, %u segment. height %u, ts col num %u. tid %u pid %u", inner_id, j,
+              FLAGS_absolute_default_skiplist_height, ts_vec.size(), id_, pid_);
     }
-    int index_pos = schema::IndexUtil::GetPosition(column_key, new_table_meta->column_key());
-    if (index_pos >= 0) {
-        new_table_meta->mutable_column_key(index_pos)->CopyFrom(column_key);
-    } else {
-        new_table_meta->add_column_key()->CopyFrom(column_key);
-    }
-    if (!index_def) {
-        auto cols = GetSchema();
-        if (!cols) {
-            return false;
-        }
-        std::map<std::string, ColumnDef> schema;
-        for (int idx = 0; idx < cols->size(); idx++) {
-            const auto& col = cols->Get(idx);
-            schema.emplace(col.name(), ColumnDef(col.name(), idx, col.data_type(), col.not_null()));
-        }
-        std::vector<ColumnDef> col_vec;
-        for (const auto& col_name : column_key.col_name()) {
-            auto it = schema.find(col_name);
-            if (it == schema.end()) {
-                PDLOG(WARNING, "not found col_name[%s]. tid %u pid %u", col_name.c_str(), id_, pid_);
-                return false;
-            }
-            col_vec.push_back(it->second);
-        }
-        std::vector<uint32_t> ts_vec;
-        if (!column_key.ts_name().empty()) {
-            auto ts_iter = schema.find(column_key.ts_name());
-            if (ts_iter == schema.end()) {
-                PDLOG(WARNING, "not found ts_name[%s]. tid %u pid %u", column_key.ts_name().c_str(), id_, pid_);
-                return false;
-            }
-            ts_vec.push_back(ts_iter->second.GetId());
-        } else {
-            ts_vec.push_back(DEFAULT_TS_COL_ID);
-        }
-        uint32_t inner_id = table_index_.GetAllInnerIndex()->size();
-        Segment** seg_arr = new Segment*[seg_cnt_];
-        for (uint32_t j = 0; j < seg_cnt_; j++) {
-            seg_arr[j] = new Segment(FLAGS_absolute_default_skiplist_height, ts_vec);
-            PDLOG(INFO, "init %u, %u segment. height %u, ts col num %u. tid %u pid %u", inner_id, j,
-                  FLAGS_absolute_default_skiplist_height, ts_vec.size(), id_, pid_);
-        }
-        index_def = std::make_shared<IndexDef>(column_key.index_name(), table_index_.GetMaxIndexId() + 1,
-                IndexStatus::kReady, ::openmldb::type::IndexType::kTimeSerise, col_vec);
-        if (table_index_.AddIndex(index_def) < 0) {
-            PDLOG(WARNING, "add index failed. tid %u pid %u", id_, pid_);
-            return false;
-        }
-        segments_[inner_id] = seg_arr;
-        if (!column_key.ts_name().empty()) {
-            auto ts_iter = schema.find(column_key.ts_name());
-            index_def->SetTsColumn(std::make_shared<ColumnDef>(ts_iter->second));
-        } else {
-            index_def->SetTsColumn(std::make_shared<ColumnDef>(DEFAULT_TS_COL_NAME, DEFAULT_TS_COL_ID,
-                        ::openmldb::type::kTimestamp, true));
-        }
-        if (column_key.has_ttl()) {
-            index_def->SetTTL(::openmldb::storage::TTLSt(column_key.ttl()));
-        } else {
-            index_def->SetTTL(*(table_index_.GetIndex(0)->GetTTL()));
-        }
-        index_def->SetInnerPos(inner_id);
-        std::vector<std::shared_ptr<IndexDef>> index_vec = {index_def};
-        auto inner_index_st = std::make_shared<InnerIndexSt>(inner_id, index_vec);
-        table_index_.AddInnerIndex(inner_index_st);
-        table_index_.SetInnerIndexPos(new_table_meta->column_key_size() - 1, inner_id);
-    }
-    index_def->SetStatus(IndexStatus::kReady);
-    std::atomic_store_explicit(&table_meta_, new_table_meta, std::memory_order_release);
+    segments_[inner_id] = seg_arr;
     return true;
 }
 
-bool MemTable::DeleteIndex(const std::string& idx_name) {
-    std::shared_ptr<IndexDef> index_def = table_index_.GetIndex(idx_name);
-    if (!index_def) {
-        PDLOG(WARNING, "index %s does not exist. tid %u pid %u", idx_name.c_str(), id_, pid_);
-        return false;
+uint32_t MemTable::SegIdx(const std::string& pk) {
+    if (seg_cnt_ > 1) {
+        return ::openmldb::base::hash(pk.c_str(), pk.length(), SEED) % seg_cnt_;
     }
-    if (index_def->GetId() == 0) {
-        PDLOG(WARNING, "index %s is primary key, cannot delete. tid %u pid %u", idx_name.c_str(), id_, pid_);
-        return false;
-    }
-    if (!index_def->IsReady()) {
-        PDLOG(WARNING, "index %s can't delete. tid %u pid %u", idx_name.c_str(), id_, pid_);
-        return false;
-    }
-    auto table_meta = GetTableMeta();
-    auto new_table_meta = std::make_shared<::openmldb::api::TableMeta>(*table_meta);
-    if (index_def->GetId() < (uint32_t)table_meta->column_key_size()) {
-        new_table_meta->mutable_column_key(index_def->GetId())->set_flag(1);
-    }
-    std::atomic_store_explicit(&table_meta_, new_table_meta, std::memory_order_release);
-    index_def->SetStatus(IndexStatus::kWaiting);  // let gc do deletion
-    return true;
+    return 0;
 }
 
 ::hybridse::vm::WindowIterator* MemTable::NewWindowIterator(uint32_t index) {
@@ -747,8 +669,8 @@ bool MemTable::DeleteIndex(const std::string& idx_name) {
     if (ts_col) {
         ts_idx = ts_col->GetId();
     }
-    return new MemTableKeyIterator(segments_[real_idx], seg_cnt_, ttl->ttl_type,
-            expire_time, expire_cnt, ts_idx, GetCompressType());
+    return new MemTableKeyIterator(segments_[real_idx], seg_cnt_, ttl->ttl_type, expire_time, expire_cnt, ts_idx,
+                                   GetCompressType());
 }
 
 TraverseIterator* MemTable::NewTraverseIterator(uint32_t index) {
@@ -767,11 +689,11 @@ TraverseIterator* MemTable::NewTraverseIterator(uint32_t index) {
     uint32_t real_idx = index_def->GetInnerPos();
     auto ts_col = index_def->GetTsColumn();
     if (ts_col) {
-        return new MemTableTraverseIterator(segments_[real_idx], seg_cnt_, ttl->ttl_type,
-                expire_time, expire_cnt, ts_col->GetId(), GetCompressType());
+        return new MemTableTraverseIterator(segments_[real_idx], seg_cnt_, ttl->ttl_type, expire_time, expire_cnt,
+                                            ts_col->GetId(), GetCompressType());
     }
-    return new MemTableTraverseIterator(segments_[real_idx], seg_cnt_, ttl->ttl_type,
-            expire_time, expire_cnt, 0, GetCompressType());
+    return new MemTableTraverseIterator(segments_[real_idx], seg_cnt_, ttl->ttl_type, expire_time, expire_cnt, 0,
+                                        GetCompressType());
 }
 
 bool MemTable::GetBulkLoadInfo(::openmldb::api::BulkLoadInfoResponse* response) {
